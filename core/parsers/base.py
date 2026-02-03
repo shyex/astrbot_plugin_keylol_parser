@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
-from ..config import ParserItem, PluginConfig
+from ..config import ParserItem
 from ..constants import ANDROID_HEADER, COMMON_HEADER, IOS_HEADER
 from ..data import (
     AudioContent,
@@ -66,7 +66,7 @@ class BaseParser(ABC):
         _key_patterns: ClassVar[KeyPatterns]
         _handlers: ClassVar[dict[str, HandlerFunc]]
 
-    def __init__(self, config: PluginConfig, downloader: Downloader):
+    def __init__(self, config, downloader: Downloader):
         self.headers = COMMON_HEADER.copy()
         self.ios_headers = IOS_HEADER.copy()
         self.android_headers = ANDROID_HEADER.copy()
@@ -224,7 +224,7 @@ class BaseParser(ABC):
         avatar_url: str | None = None,
         description: str | None = None,
         headers: dict[str, str] | None = None,
-    ):  
+    ):
         """创建作者对象"""
 
         avatar_task = None
@@ -252,7 +252,7 @@ class BaseParser(ABC):
                 url_or_task, headers=headers or self.headers, proxy=self.proxy
             )
 
-        return VideoContent(url_or_task, cover_task, duration)
+        return VideoContent(path_task=url_or_task, cover=cover_task, duration=duration)
 
     def create_image_contents(
         self,
@@ -265,7 +265,7 @@ class BaseParser(ABC):
             task = self.downloader.download_img(
                 url, headers=headers or self.headers, proxy=self.proxy
             )
-            contents.append(ImageContent(task))
+            contents.append(ImageContent(path_task=task))
         return contents
 
     def create_dynamic_contents(
@@ -279,7 +279,7 @@ class BaseParser(ABC):
             task = self.downloader.download_video(
                 url, headers=headers or self.headers, proxy=self.proxy
             )
-            contents.append(DynamicContent(task))
+            contents.append(DynamicContent(path_task=task))
         return contents
 
     def create_audio_content(
@@ -294,7 +294,7 @@ class BaseParser(ABC):
                 url_or_task, headers=headers or self.headers, proxy=self.proxy
             )
 
-        return AudioContent(url_or_task, duration)
+        return AudioContent(path_task=url_or_task, duration=duration)
 
     def create_graphics_content(
         self,
@@ -307,7 +307,7 @@ class BaseParser(ABC):
         image_task = self.downloader.download_img(
             image_url, headers=headers or self.headers, proxy=self.proxy
         )
-        return GraphicsContent(image_task, text, alt)
+        return GraphicsContent(path_task=image_task, text=text, alt=alt)
 
     def create_file_content(
         self,
@@ -324,4 +324,4 @@ class BaseParser(ABC):
                 proxy=self.proxy,
             )
 
-        return FileContent(url_or_task)
+        return FileContent(path_task=url_or_task, name=name)
