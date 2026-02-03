@@ -1,0 +1,87 @@
+{
+  "type": "object",
+  "properties": {
+    "common_timeout": {
+      "type": "integer",
+      "title": "通用超时时间",
+      "default": 30,
+      "description": "请求超时时间（秒）"
+    },
+    "download_retry_times": {
+      "type": "integer",
+      "title": "下载重试次数",
+      "default": 3,
+      "description": "下载失败时的重试次数"
+    },
+    "proxy": {
+      "type": "string",
+      "title": "代理地址",
+      "default": "",
+      "description": "HTTP 代理地址，例如 http://127.0.0.1:7890"
+    },
+    "forward_threshold": {
+      "type": "integer",
+      "title": "转发阈值",
+      "default": 5,
+      "description": "消息段数量达到此值时强制合并转发"
+    },
+    "show_download_fail_tip": {
+      "type": "boolean",
+      "title": "显示下载失败提示",
+      "default": true,
+      "description": "当媒体下载失败时是否显示提示"
+    },
+    "single_heavy_render_card": {
+      "type": "boolean",
+      "title": "单一重媒体时渲染卡片",
+      "default": true,
+      "description": "当只有一个重媒体时是否渲染卡片"
+    },
+    "cache_dir": {
+      "type": "string",
+      "title": "缓存目录",
+      "default": "data/cache",
+      "description": "缓存文件保存目录"
+    },
+    "emoji_cdn": {
+      "type": "string",
+      "title": "Emoji CDN",
+      "default": "https://cdn.jsdelivr.net/npm/twemoji@latest/assets/72x72/",
+      "description": "Emoji 图片 CDN 地址"
+    },
+    "emoji_style": {
+      "type": "string",
+      "title": "Emoji 样式",
+      "default": "twitter",
+      "description": "Emoji 显示样式"
+    },
+    "parser": {
+      "type": "object",
+      "title": "解析器配置",
+      "properties": {
+        "keylol": {
+          "type": "object",
+          "title": "其乐论坛",
+          "properties": {
+            "enable": {
+              "type": "boolean",
+              "title": "启用",
+              "default": true
+            },
+            "use_proxy": {
+              "type": "boolean",
+              "title": "使用代理",
+              "default": false
+            },
+            "cookies": {
+              "type": "string",
+              "title": "Cookies",
+              "default": "",
+              "description": "其乐论坛的 Cookies，用于访问需要登录的内容"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+aiohttp
+beautifulsoup4
+lxml
+pydantic
+pydantic-settings
+python-dotenv
+Pillow
+aiofiles
