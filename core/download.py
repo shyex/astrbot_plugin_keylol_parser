@@ -7,17 +7,16 @@ from typing import Optional, Union
 import os
 import tempfile
 
-from .config import PluginConfig
 from .exception import DownloadException, DownloadLimitException, SizeLimitException, ZeroSizeException
 
 class Downloader:
     """下载器"""
     
-    def __init__(self, config: PluginConfig):
+    def __init__(self, config):
         self.config = config
         self.session: Optional[aiohttp.ClientSession] = None
         # 确保缓存目录存在
-        self.config.cache_dir.mkdir(parents=True, exist_ok=True)
+        Path(self.config.cache_dir).mkdir(parents=True, exist_ok=True)
     
     async def get_session(self) -> aiohttp.ClientSession:
         """获取会话"""
@@ -42,7 +41,7 @@ class Downloader:
             file_name = url.split("/")[-1]
         
         # 创建缓存文件
-        cache_file = self.config.cache_dir / file_name
+        cache_file = Path(self.config.cache_dir) / file_name
         
         # 下载文件
         retries = self.config.download_retry_times
@@ -83,7 +82,7 @@ class Downloader:
         proxy: Optional[str] = None
     ) -> Path:
         """下载图片"""
-        return await self.download_file(url, headers, proxy=proxy)
+        return await self.download_file(url, headers=headers, proxy=proxy)
     
     async def download_video(
         self, 
@@ -92,7 +91,7 @@ class Downloader:
         proxy: Optional[str] = None
     ) -> Path:
         """下载视频"""
-        return await self.download_file(url, headers, proxy=proxy)
+        return await self.download_file(url, headers=headers, proxy=proxy)
     
     async def download_audio(
         self, 
@@ -101,7 +100,7 @@ class Downloader:
         proxy: Optional[str] = None
     ) -> Path:
         """下载音频"""
-        return await self.download_file(url, headers, proxy=proxy)
+        return await self.download_file(url, headers=headers, proxy=proxy)
     
     async def close(self):
         """关闭会话"""
