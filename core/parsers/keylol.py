@@ -1,213 +1,163 @@
-import re
-from typing import ClassVar
+"""其乐论坛解析器"""
 
-from aiohttp import ClientError
-from bs4 import BeautifulSoup, Tag
+import asyncio
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import aiohttp
+from bs4 import BeautifulSoup
 
 from ..config import PluginConfig
+from ..data import (
+    Author,
+    ImageContent,
+    MediaContent,
+    ParseResult,
+    ParseResultKwargs,
+    Platform,
+)
 from ..download import Downloader
-from ..exception import ParseException
-from .base import BaseParser, Platform, handle
+from .base import BaseParser
 
 
 class KeylolParser(BaseParser):
-    # 平台信息
-    platform: ClassVar[Platform] = Platform(name="keylol", display_name="其乐")
+    """其乐论坛解析器"""
 
     def __init__(self, config: PluginConfig, downloader: Downloader):
         super().__init__(config, downloader)
-        extra_headers = {
-            "Referer": "https://keylol.com/",
+        self.platform = Platform(name="keylol", display_name="其乐论坛")
+        # 添加请求头
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "zh-CN,zh;q=0.8,en-US;q=0.5,en;q=0.3",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
         }
-        self.headers.update(extra_headers)
-        
-        # 获取配置文件中的cookies
-        parser_cfg = self.cfg.parser.get("keylol", {})
-        self.keylol_ck = parser_cfg.get("cookies", "")
-        
-        if self.keylol_ck:
-            self.headers["Cookie"] = self.keylol_ck
+        # 添加 cookies（如果有）
+        if config.parser.get("keylol", {}).get("cookies"):
+            self.headers["Cookie"] = config.parser["keylol"]["cookies"]
 
-    @staticmethod
-    def keylol_url(tid: str | int) -> str:
-        return f"https://keylol.com/t{tid}"
-
-    @handle("keylol.com", r"(?:https?://)?keylol\.com/t(?P<tid>\d+)(?:-\d+-\d+)?")
-    async def _parse(self, searched: re.Match[str]):
-        # 从匹配对象中获取URL部分
-        url_part = searched.group(0)
-        # 构建完整URL
-        if not url_part.startswith("http"):
-            url = f"https://{url_part}"
-        else:
-            url = url_part
-        
-        async with self.session.get(url, headers=self.headers, allow_redirects=True, proxy=self.proxy) as resp:
-            if resp.status != 200:
-                raise ParseException(f"无法获取页面, HTTP {resp.status}")
+    @BaseParser.handle("keylol.com", r"(?:https?://)?keylol\.com/t(?P<tid>\d+)(?:-\d+-\d+)?")
+    async def _parse(self, searched: re.Match[str]) -> ParseResult:
+        """解析其乐论坛帖子"""
+        url = self._build_url(searched)
+        async with self.session.get(url, headers=self.headers) as resp:
             html = await resp.text()
-
-        # 使用 BeautifulSoup 解析 HTML
         soup = BeautifulSoup(html, "html.parser")
 
         # 提取标题
-        title = None
-        title_tag = soup.find("a", id="thread_subject")
-        if title_tag and isinstance(title_tag, Tag):
-            title = title_tag.get_text(strip=True)
-
+        title = self._extract_title(soup)
         # 提取作者
-        author = None
-        author_tag = soup.find("a", class_="xw1", href=re.compile(r"suid-\d+"))
-        if author_tag and isinstance(author_tag, Tag):
-            author_name = author_tag.get_text(strip=True)
-            author = self.create_author(author_name)
-
-        # 提取时间
-        timestamp = None
-        time_tag = soup.find("em", id=re.compile(r"authorposton\d+"))
-        if time_tag and isinstance(time_tag, Tag):
-            time_span = time_tag.find("span", title=re.compile(r"\d{4}-\d{1,2}-\d{1,2} \d{2}:\d{2}:\d{2}"))
-            if time_span and isinstance(time_span, Tag):
-                timestr = time_span.get("title", "")
-                if timestr:
-                    # 转换时间格式，其乐论坛的时间格式：2026-1-17 19:49:33
-                    try:
-                        import time as time_module
-                        timestamp = int(time_module.mktime(time_module.strptime(timestr, "%Y-%m-%d %H:%M:%S")))
-                    except ValueError:
-                        pass
-
+        author = self._extract_author(soup)
+        # 提取发布时间
+        timestamp = self._extract_timestamp(soup)
         # 提取帖子内容
-        text = None
-        content_tag = soup.find("td", class_="t_f", id=re.compile(r"postmessage_\d+"))
-        img_urls = []
-        if content_tag and isinstance(content_tag, Tag):
-            # 提取文本内容，清理HTML标签
-            text = content_tag.get_text("\n", strip=True)
-            text = self.clean_keylol_text(text)
-            
-            # 提取图片，过滤广告图片
-            img_tags = content_tag.find_all("img")
-            for img in img_tags:
-                if isinstance(img, Tag):
-                    img_url = img.get("src", "")
-                    
-                    # 检查是否为附件形式的图片（使用占位符）
-                    if img_url == "static/image/common/none.gif":
-                        # 从file属性获取实际图片URL
-                        file_url = img.get("file", "")
-                        # 从zoomfile属性获取实际图片URL
-                        zoom_url = img.get("zoomfile", "")
-                        # 优先使用file属性
-                        if file_url and file_url.startswith("http"):
-                            img_url = file_url
-                        elif zoom_url and zoom_url.startswith("http"):
-                            img_url = zoom_url
-                    
-                    # 检查是否为广告图片
-                    is_ad = False
-                    
-                    # 1. 检查图片URL是否包含广告特征
-                    if any(ad_keyword in img_url.lower() for ad_keyword in ["ad", "advertisement", "banner"]):
-                        is_ad = True
-                    
-                    # 2. 检查图片是否被包裹在广告链接中（指向https://keylol.com/hello/）
-                    if img.parent and img.parent.name == "a":
-                        parent_href = img.parent.get("href", "")
-                        if parent_href.startswith("https://keylol.com/hello/"):
-                            is_ad = True
-                    
-                    # 3. 检查图片是否没有aid属性且非附件图片（通常是广告）
-                    if not img.get("aid") and img_url != "static/image/common/none.gif":
-                        # 检查尺寸是否为广告常见尺寸（120x240）
-                        width = img.get("width")
-                        height = img.get("height")
-                        if width == "120" and height == "240":
-                            is_ad = True
-                    
-                    # 只添加非广告图片
-                    if img_url and img_url.startswith("http") and not is_ad:
-                        img_urls.append(img_url)
-        
-        # 创建媒体内容
-        contents = []
-        if img_urls:
-            # 使用GraphicsContent替代ImageContent，这样会将图片和文字一起渲染在卡片上
-            for i, img_url in enumerate(img_urls):
-                # 为每张图片添加简短描述
-                img_alt = f"图片{i+1}"
-                # 使用图片前的文本作为图片描述
-                img_text = text if i == 0 else None
-                # 创建图文内容
-                content = self.create_graphics_content(
-                    img_url,
-                    text=img_text,
-                    alt=img_alt
-                )
-                contents.append(content)
-        elif text:
-            # 如果没有图片但有文本，创建一个包含文本的内容
-            # 这里我们可以创建一个简单的图文内容，或者直接在解析结果中设置text
-            pass
+        text, images = self._extract_content(soup)
 
+        # 下载图片
+        contents = await self._download_images(images)
+
+        # 构建解析结果
         return self.result(
             title=title,
+            author=author,
+            timestamp=timestamp,
             text=text,
             url=url,
-            author=author,
             contents=contents,
-            timestamp=timestamp,
         )
 
-    @staticmethod
-    def clean_keylol_text(text: str, max_length: int = 500) -> str:
-        rules: list[tuple[str, str, int]] = [
-            # 移除引用标签内容
-            (r"引用.*?：", "", re.DOTALL),
-            (r"查看附件.*?", "", re.DOTALL),
-            # 移除Steam功能链接文本
-            (r"Steam商店.*?复制ASF代码", "", re.DOTALL),
-            (r"Steam商店", "", 0),
-            (r"Steam评测区", "", 0),
-            (r"其乐相关帖", "", 0),
-            (r"SteamDB", "", 0),
-            (r"AStats", "", 0),
-            (r"SCE", "", 0),
-            (r"Barter", "", 0),
-            (r"Steam客户端中查看", "", 0),
-            (r"入库或安装", "", 0),
-            (r"复制ASF代码", "", 0),
-            # 移除开头的版权声明文本
-            (r"本文为.*?严禁转载", "", re.DOTALL),
-            # 移除图片文件名及相关参数
-            (r"[a-zA-Z0-9_]+\.(jpg|jpeg|png|gif|bmp|webp)", "", 0),  # 图片文件名
-            (r"\(\d+(?:\.\d+)? KB, 下载次数: \d+\)", "", 0),  # 图片大小和下载次数（支持带小数点和不带小数点两种格式）
-            (r"下载附件", "", 0),  # 下载附件文本
-            (r"\d+\s+小时前", "", 0),  # 上传时间
-            (r"上传", "", 0),  # 上传文本
-            # 清理空白字符
-            (r"\n{3,}", "\n\n", 0),  # 多个换行符压缩为两个
-            (r"[ \t]+", " ", 0),  # 多个空格/制表符压缩为一个空格
-            (r"\n\s+\n", "\n\n", 0),  # 清理空行中的空白字符
-            (r"[|]+\s*", "", 0),  # 清理多余的竖线符号
-            (r"^\s+", "", 0),  # 清理开头的空白字符
-            (r"\s+$", "", 0),  # 清理结尾的空白字符
-        ]
+    def _build_url(self, searched: re.Match[str]) -> str:
+        """构建完整的帖子 URL"""
+        tid = searched.group("tid")
+        return f"https://keylol.com/t{tid}-1-1"
 
-        for rule in rules:
-            pattern, replacement, flags = rule[0], rule[1], rule[2]
-            text = re.sub(pattern, replacement, text, flags=flags)
+    def _extract_title(self, soup: BeautifulSoup) -> Optional[str]:
+        """提取帖子标题"""
+        title_tag = soup.find("h1", class_="ts")
+        if title_tag:
+            return title_tag.text.strip()
+        return None
 
-        text = text.strip()
+    def _extract_author(self, soup: BeautifulSoup) -> Optional[Author]:
+        """提取作者信息"""
+        author_tag = soup.find("div", class_="authi").find("a", class_="xw1")
+        if author_tag:
+            author_name = author_tag.text.strip()
+            return Author(name=author_name)
+        return None
 
-        # 限制文本长度
-        if len(text) > max_length:
-            text = text[:max_length] + "..."
+    def _extract_timestamp(self, soup: BeautifulSoup) -> Optional[int]:
+        """提取发布时间"""
+        time_tag = soup.find("div", class_="authi").find("em")
+        if time_tag:
+            # 这里需要根据实际的时间格式进行解析
+            # 暂时返回 None，实际使用时需要实现
+            return None
+        return None
 
-        return text
+    def _extract_content(self, soup: BeautifulSoup) -> Tuple[Optional[str], List[str]]:
+        """提取帖子内容和图片"""
+        content_tag = soup.find("td", class_="t_f")
+        if not content_tag:
+            return None, []
+
+        # 提取文本内容（去除标签）
+        text = content_tag.get_text(separator="\n", strip=True)
+
+        # 提取图片链接
+        images = []
+        for img_tag in content_tag.find_all("img"):
+            img_url = img_tag.get("src")
+            if img_url:
+                # 过滤广告图片
+                if not self._is_ad_image(img_tag, img_url):
+                    images.append(img_url)
+
+        return text, images
+
+    def _is_ad_image(self, img_tag: Any, img_url: str) -> bool:
+        """判断是否为广告图片"""
+        # 过滤掉明显的广告图片 URL
+        ad_keywords = ["ad", "advertisement", "banner", "promotion"]
+        if any(keyword in img_url.lower() for keyword in ad_keywords):
+            return True
+
+        # 过滤掉小尺寸图片（可能是表情或图标）
+        width = img_tag.get("width", "")
+        height = img_tag.get("height", "")
+        if width and height:
+            try:
+                if int(width) < 100 or int(height) < 100:
+                    return True
+            except ValueError:
+                pass
+
+        # 过滤掉特定路径的图片
+        if "static/image/common" in img_url:
+            return True
+
+        return False
+
+    async def _download_images(self, image_urls: List[str]) -> List[MediaContent]:
+        """下载图片"""
+        contents = []
+        for url in image_urls:
+            # 确保 URL 完整
+            if not url.startswith("http"):
+                url = f"https://keylol.com{url}"
+
+            # 下载图片
+            try:
+                task = asyncio.create_task(self.downloader.download(url))
+                contents.append(ImageContent(path_task=task))
+            except Exception as e:
+                print(f"下载图片失败: {e}")
+
+        return contents
+
+    def result(self, **kwargs: ParseResultKwargs) -> ParseResult:
+        """构建解析结果"""
+        return ParseResult(platform=self.platform, **kwargs)
