@@ -3,5 +3,5 @@ display_name: 其乐论坛解析器
 desc: 解析其乐论坛帖子链接，将内容渲染为图片卡片并发送到群聊
 help: 发送其乐论坛帖子链接（如 https://keylol.com/t1028242-1-1），机器人会自动解析并发送渲染好的卡片
 version: v1.0.0
-author: User
-repo: https://github.com/user/astrbot_plugin_keylol_parser
+author: shyex
+repo: https://github.com/shyex/astrbot_plugin_keylol_parser
