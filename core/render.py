@@ -9,8 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from .config import PluginConfig
-from .data import Author, Content, ParseResult
+from .data import Author, MediaContent, ParseResult
 
 
 class Renderer:
@@ -29,9 +28,9 @@ class Renderer:
     # Emoji 缓存
     _emoji_cache: Dict[str, Image] = {}
 
-    def __init__(self, config: PluginConfig):
+    def __init__(self, config):
         self.cfg = config
-        self.cache_dir = config.cache_dir
+        self.cache_dir = Path(config.cache_dir)
         self.emoji_cdn = config.emoji_cdn
         self.emoji_style = config.emoji_style
 
