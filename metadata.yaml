@@ -1,0 +1,7 @@
+name: astrbot_plugin_keylolparser
+display_name: 其乐论坛解析器
+desc: 自动解析其乐论坛 (keylol.com) 的链接，提取帖子标题、作者、发布时间、内容摘要支持解析帖子中的图片（过滤广告图片）
+help: 略
+version: v0.1.0
+author: shyex
+repo: https://github.com/shyex/astrbot_plugin_keylolparser
