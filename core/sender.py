@@ -1,220 +1,158 @@
 """发送模块"""
 
-from itertools import chain
+import asyncio
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
-from astrbot.core.message.components import Image, Plain, Video, Record, File, Nodes, Node
-
-from .config import PluginConfig
-from .data import (
-    AudioContent,
-    DynamicContent,
-    FileContent,
-    GraphicsContent,
-    ImageContent,
-    ParseResult,
-    VideoContent,
-)
-from .exception import (
-    DownloadException,
-    DownloadLimitException,
-    SizeLimitException,
-    ZeroSizeException,
-)
+from .data import MediaContent, ParseResult
 from .render import Renderer
 
 
-class MessageSender:
+class Sender:
     """
-    消息发送器
+    发送器
 
     职责：
-    - 根据解析结果（ParseResult）规划发送策略
-    - 控制是否渲染卡片、是否强制合并转发
-    - 将不同类型的内容转换为 AstrBot 消息组件并发送
-
-    重要原则：
-    - 不在此处做解析
-    - 不在此处决定“内容是什么”
-    - 只负责“怎么发”
+    - 发送解析结果
+    - 管理发送计划
     """
 
-    def __init__(self, config: PluginConfig, renderer: Renderer):
-        self.config = config
+    def __init__(self, config, renderer: Renderer):
+        self.cfg = config
         self.renderer = renderer
 
-    def _build_send_plan(self, result: ParseResult) -> dict:
+    async def send_parse_result(self, event, result: ParseResult):
         """
-        根据解析结果生成发送计划（plan）
+        发送解析结果
 
-        plan 只做“策略决策”，不做任何 IO 或发送动作。
-        后续发送流程严格按 plan 执行，避免逻辑分散。
+        Args:
+            event: 事件对象
+            result: 解析结果
         """
-        light, heavy = [], []
+        # 构建发送计划
+        plan = self._build_send_plan(result)
 
-        # 合并主内容 + 转发内容，统一参与发送策略计算
-        for cont in chain(
-            result.contents, result.repost.contents if result.repost else ()
-        ):
-            if isinstance(cont, (ImageContent, GraphicsContent)):
-                light.append(cont)
-            elif isinstance(cont, (VideoContent, AudioContent, FileContent, DynamicContent)):
-                heavy.append(cont)
-            else:
-                light.append(cont)
+        # 发送预览卡片
+        await self._send_preview_card(event, result, plan)
 
-        # 仅在“单一重媒体且无其他内容”时，才允许渲染卡片
-        is_single_heavy = len(heavy) == 1 and not light
-        render_card = is_single_heavy and self.config.get(
-            "single_heavy_render_card", False
-        )
+        # 构建消息段
+        segs = await self._build_segments(result, plan)
 
-        # 实际消息段数量（卡片也算一个段）
-        seg_count = len(light) + len(heavy) + (1 if render_card else 0)
+        # 合并消息段（如果需要）
+        segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
 
-        # 达到阈值后，强制合并转发，避免刷屏
-        force_merge = seg_count >= self.config["forward_threshold"]
+        # 发送消息段
+        if segs:
+            for seg in segs:
+                await event.send(seg)
 
-        return {
-            "light": light,
-            "heavy": heavy,
-            "render_card": render_card,
-            # 预览卡片：仅在“渲染卡片 + 不合并”时独立发送
-            "preview_card": render_card and not force_merge,
-            "force_merge": force_merge,
+    def _build_send_plan(self, result: ParseResult) -> Dict[str, bool]:
+        """
+        构建发送计划
+
+        Args:
+            result: 解析结果
+
+        Returns:
+            发送计划
+        """
+        plan = {
+            "send_preview": True,
+            "send_contents": True,
+            "force_merge": False,
         }
 
+        # 根据内容类型和数量调整发送计划
+        if len(result.contents) > self.cfg.forward_threshold:
+            plan["force_merge"] = True
 
-    async def _send_preview_card(
-        self,
-        event,
-        result: ParseResult,
-        plan: dict,
-    ):
-        """
-        发送预览卡片（独立消息）
+        return plan
 
-        场景：
-        - 只有一个重媒体
-        - 未触发合并转发
-        - 卡片作为“预览”，不与正文混合
+    async def _send_preview_card(self, event, result: ParseResult, plan: Dict[str, bool]):
         """
-        if not plan["preview_card"]:
+        发送预览卡片
+
+        Args:
+            event: 事件对象
+            result: 解析结果
+            plan: 发送计划
+        """
+        if not plan["send_preview"]:
             return
 
-        if image_path := await self.renderer.render_card(result):
-            # 发送渲染好的卡片图片
-            await event.send(event.chain_result([Image(str(image_path))]))
+        # 渲染预览卡片
+        card_path = await self.renderer.render_card(result)
+        if card_path:
+            # 发送卡片
+            from astrbot.core.message import MessageSegment
+            seg = MessageSegment.image(path=str(card_path))
+            await event.send(seg)
 
-
-    async def _build_segments(
-        self,
-        result: ParseResult,
-        plan: dict,
-    ) -> list:
+    async def _build_segments(self, result: ParseResult, plan: Dict[str, bool]) -> List:
         """
-        根据发送计划构建消息段列表
+        构建消息段
 
-        这里负责：
-        - 下载媒体
-        - 转换为 AstrBot 消息组件
+        Args:
+            result: 解析结果
+            plan: 发送计划
+
+        Returns:
+            消息段列表
         """
-        segs: list = []
+        segs = []
 
-        # 合并转发时，卡片以内联形式作为一个消息段参与合并
-        if plan["render_card"] and plan["force_merge"]:
-            if image_path := await self.renderer.render_card(result):
-                segs.append(Image(str(image_path)))
-
-        # 轻媒体处理
-        for cont in plan["light"]:
-            try:
-                path: Path = await cont.get_path()
-            except (DownloadLimitException, ZeroSizeException):
-                continue
-            except DownloadException:
-                if self.config["show_download_fail_tip"]:
-                    segs.append(Plain("此项媒体下载失败"))
-                continue
-
-            if isinstance(cont, ImageContent):
-                segs.append(Image(str(path)))
-            elif isinstance(cont, GraphicsContent):
-                segs.append(Image(str(path)))
-                # GraphicsContent 允许携带补充文本
-                if cont.text:
-                    segs.append(Plain(cont.text))
-                if cont.alt:
-                    segs.append(Plain(cont.alt))
-
-        # 重媒体处理
-        for cont in plan["heavy"]:
-            try:
-                path: Path = await cont.get_path()
-            except SizeLimitException:
-                segs.append(Plain("此项媒体超过大小限制"))
-                continue
-            except DownloadException:
-                if self.config["show_download_fail_tip"]:
-                    segs.append(Plain("此项媒体下载失败"))
-                continue
-
-            if isinstance(cont, (VideoContent, DynamicContent)):
-                segs.append(Video(str(path)))
-            elif isinstance(cont, AudioContent):
-                segs.append(Record(str(path)))
-            elif isinstance(cont, FileContent):
-                segs.append(File(name=path.name, file=str(path)))
+        if plan["send_contents"]:
+            for content in result.contents:
+                seg = await self._build_segment(content)
+                if seg:
+                    segs.append(seg)
 
         return segs
 
-
-    def _merge_segments_if_needed(
-        self,
-        event,
-        segs: list,
-        force_merge: bool,
-    ) -> list:
+    async def _build_segment(self, content: MediaContent) -> Optional:
         """
-        根据策略决定是否将消息段合并为转发节点
+        构建单个消息段
 
-        合并后的消息结构：
-        - 每个原始消息段成为一个 Node
-        - 统一使用机器人自身身份
+        Args:
+            content: 媒体内容
+
+        Returns:
+            消息段
         """
-        if not force_merge or not segs:
+        from astrbot.core.message import MessageSegment
+
+        path = await content.get_path()
+        if isinstance(content, MediaContent):
+            return MessageSegment.image(path=str(path))
+        return None
+
+    def _merge_segments_if_needed(self, event, segs: List, force_merge: bool) -> List:
+        """
+        合并消息段（如果需要）
+
+        Args:
+            event: 事件对象
+            segs: 消息段列表
+            force_merge: 是否强制合并
+
+        Returns:
+            合并后的消息段列表
+        """
+        if not force_merge and len(segs) <= 1:
             return segs
 
-        nodes = Nodes([])
-        self_id = event.get_self_id()
+        # 构建合并转发
+        from astrbot.core.message import MessageChain, MessageSegment
 
+        merged = []
         for seg in segs:
-            nodes.nodes.append(Node(uin=self_id, name="解析器", content=[seg]))
+            merged.append({
+                "type": "node",
+                "data": {
+                    "name": "机器人",
+                    "uin": "123456",
+                    "content": MessageChain([seg])
+                }
+            })
 
-        return [nodes]
-
-
-    async def send_parse_result(
-        self,
-        event,
-        result: ParseResult,
-    ):
-        """
-        发送解析结果的统一入口
-
-        执行顺序固定：
-        1. 构建发送计划
-        2. 发送预览卡片（如有）
-        3. 构建消息段
-        4. 必要时合并转发
-        5. 最终发送
-        """
-        plan = self._build_send_plan(result)
-
-        await self._send_preview_card(event, result, plan)
-
-        segs = await self._build_segments(result, plan)
-        segs = self._merge_segments_if_needed(event, segs, plan["force_merge"])
-
-        if segs:
-            await event.send(event.chain_result(segs))
+        return [MessageSegment.forward(node_list=merged)]
